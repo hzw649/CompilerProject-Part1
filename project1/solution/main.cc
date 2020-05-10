@@ -14,10 +14,16 @@ int main()
 	char iname[100], oname[100];
 
 	record js;
-	for (int i=1;i<=10;i++)
+	for (int i=1;i<=11;i++)
 	{
-		sprintf(iname, "./cases/case%d.json", i);
-		sprintf(oname, "./kernels/kernel_case%d.cc", i);
+        if (i < 11) {
+		    sprintf(iname, "./cases/case%d.json", i);
+		    sprintf(oname, "./kernels/kernel_case%d.cc", i);
+        }
+        else {
+            sprintf(iname, "./cases/example.json");
+            sprintf(oname, "./kernels/kernel_example.cc");
+        }
 		FILE* fin  = fopen(iname, "r");
 		if (fin == nullptr) continue;
 		// FILE* fout = fopen(oname, "w");
