@@ -1,9 +1,11 @@
 #ifndef GENERATE_H
 #define GENERATE_H
 
+#include "IR.h"
 #include "parse.h"
-#include "type.h"
+using namespace std;
+using namespace Boost::Internal;
 
-Group IRGenerator(record& js);
+Group IRGenerator(record&);
 
 #endif

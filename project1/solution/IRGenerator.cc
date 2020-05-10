@@ -1,176 +1,140 @@
-#include "IRGenerator.h"
-
-#include <unordered_map>
-#include <utility>
+#include <string>
 #include <iostream>
+#include <algorithm>
 
+#include "IR.h"
 #include "IRMutator.h"
 #include "IRVisitor.h"
 #include "IRPrinter.h"
+#include "type.h"
+#include "parse.h"
+#include "IRGenerator.h"
+#include "limits.h"
 
-IRVisitor visitor;
-Type index_type;
-Type dataType;
+Type index_type = Type::int_scalar(32);
+Type dtype;
 
 std::vector<Expr> ins;
 std::vector<Expr> outs;
-std::vector<Expr> left_index;
-std::vector<Expr> right_index;
-std::vector<Expr> all_index;
-vector<Stmt> main_stmt;
+std::vector<Stmt> body;  // main stmt
 
-void genStmt(Stmt s){
-    left_index.clear();
-    right_index.clear();
-    all_index.clear();
+std::vector<std::pair<std::string, std::vector<size_t> > > var_dom; // var and related dom
 
-    s.visit_stmt(&visitor);
-
-    // generate indexes within stmt s
-
-    //cout << "check indexes:\n";
-    for(auto index_name : visitor.left_indexes){
-        auto dom = visitor.index_mp[index_name];
-        int begin = dom.first;
-        int end = dom.second;
-        //cout << index_name << ": [" << begin << "," << end << ")\n";
-
-        Expr index_dom = Dom::make(index_type, begin, end-begin);
-        Expr index_e = Index::make(index_type, index_name, index_dom, IndexType::Spatial);
-        left_index.push_back(index_e);
-        all_index.push_back(index_e);
-    }
-
-    for(int i = visitor.left_indexes.size(); i < visitor.indexes.size(); ++i){
-        string index_name = visitor.indexes[i];
-        auto dom = visitor.index_mp[index_name];
-        int begin = dom.first;
-        int end = dom.second;
-        //cout << index_name << ": [" << begin << "," << end << ")\n";
-
-        Expr index_dom = Dom::make(index_type, begin, end); // extent is actually the end
-        Expr index_e = Index::make(index_type, index_name, index_dom, IndexType::Reduce);
-        right_index.push_back(index_e);
-        all_index.push_back(index_e);
-    }
-
-
-    vector<long unsigned int> v;
-    for(auto i : (visitor.var_dims)[visitor.leftVarName]){
-        v.push_back(i);
-    }
-
-    if(!visitor.leftVarUseful){     // generate out = 0
-        Expr dst = Var::make(dataType, visitor.leftVarName, left_index, v);
-        Expr src = IntImm::make(dataType, 0);
-        Stmt initiate = Move::make(dst, src, MoveType::MemToMem);
-
-        Stmt move_stmt = Move::make(s.as<Move>()->dst, Binary::make(dataType, BinaryOpType::Add, s.as<Move>()->dst, s.as<Move>()->src), MoveType::MemToMem);
-        
-        if(visitor.needIf.empty()){
-            main_stmt.push_back(LoopNest::make(left_index, {initiate, LoopNest::make(right_index, {move_stmt})}));
-        }
-        else{
-            Stmt ifStmt = move_stmt;
-            //cout << "check needIf:\n";
-            for(auto itr : visitor.needIf){
-                IRPrinter printer;
-                //cout << printer.print(itr.first) << " : ";
-                //cout << itr.second << "\n";
-                Expr cond = Binary::make(index_type, BinaryOpType::And, 
-                                    Compare::make(index_type, CompareOpType::LT, itr.first, IntImm::make(index_type, itr.second)),
-                                    Compare::make(index_type, CompareOpType::GE, itr.first, IntImm::make(index_type, 0)));
-                ifStmt = IfThenElse::make(cond, ifStmt, {});
-            }
-            main_stmt.push_back(LoopNest::make(left_index, {initiate, LoopNest::make(right_index, {ifStmt})}));
-        }
-        
-    }
-    else{
-        if(visitor.leftVarPreSave){ // preSave outVar
-            Expr dst = Var::make(dataType, "tmp", left_index, v);
-            Expr src = Var::make(dataType, visitor.leftVarName, left_index, v);
-            Stmt preSave = Move::make(dst, src, MoveType::MemToMem);
-            main_stmt.push_back(LoopNest::make(left_index, {preSave}));
-        }
-
-        if(visitor.needIf.empty()){
-            main_stmt.push_back(LoopNest::make(all_index, {s}));
-        }
-        else{
-            Stmt ifStmt = s;
-            //cout << "check needIf:\n";
-            for(auto itr : visitor.needIf){
-                IRPrinter printer;
-                //cout << printer.print(itr.first) << " : ";
-                //cout << itr.second << "\n";
-                Expr cond = Binary::make(index_type, BinaryOpType::And, 
-                                    Compare::make(index_type, CompareOpType::LT, itr.first, IntImm::make(index_type, itr.second)),
-                                    Compare::make(index_type, CompareOpType::GE, itr.first, IntImm::make(index_type, 0)));
-                ifStmt = IfThenElse::make(cond, ifStmt, {});
-            }
-            main_stmt.push_back(LoopNest::make(all_index, {ifStmt}));
-        }
-    }
- 
-}
 
 Group IRGenerator(record& js) {
-    index_type = Type::int_scalar(32);
-    if (js.type == "float")	dataType = Type::float_scalar(32);
-	if (js.type == "int")	dataType = Type::int_scalar(32);
+
     ins.clear();
     outs.clear();
-    visitor.var_dims.clear();
-    main_stmt.clear();
+    body.clear();
+    var_dom.clear();
 
-    for(auto s : js.vs){
-        genStmt(s);
-        // generate loop_nest
-    }
-    
-    // for(auto var : visitor.var_dims){
-    //     vector<long unsigned int> v;
-    //     for(auto i : var.second){
-    //         v.push_back(i);
-    //     }
+    if (js.type == "float")	dtype = Type::float_scalar(32);
+	if (js.type == "int")	dtype = Type::int_scalar(32);
 
-    //     if(find(js.out.begin(), js.out.end(), var.first) != js.out.end()){
-    //         Expr out_e = Var::make(dataType, var.first, {}, v);
-    //         outs.push_back(out_e);
-    //     }
-    //     if(find(js.in.begin(), js.in.end(), var.first) != js.in.end()){
-    //         Expr in_e = Var::make(dataType, var.first, {}, v);
-    //         ins.push_back(in_e);
-    //     }
-    // }
+    // build index and main_stmt
+    for (size_t i = 0; i < js.vs.size(); i++) {
+        IRVisitor visitor;
+        js.vs[i].visit_stmt(&visitor);
 
-    // generate ins & outs
-    for(auto in_name = js.in.begin(); in_name != js.in.end(); in_name++){
-        auto var = visitor.var_dims.find(*in_name);
-        if(var != visitor.var_dims.end()){
-            vector<long unsigned int> v;
-            for(auto i : var->second){
-                v.push_back(i);
+        size_t left_index = 0;
+        for (int j = 0; j < visitor.middle; j++) {
+            left_index += visitor.all_var[j].second;
+        }
+
+        std::vector<string> index_name; // all index name
+        std::vector<Expr> allIndex; // all index expr
+
+        for (size_t j = 0; j < visitor.all_index.size(); j++) {
+            auto pos = find(index_name.begin(), index_name.end(), visitor.all_index[j]);
+            if (pos == index_name.end()) { // a new index
+                index_name.push_back(visitor.all_index[j]);
             }
-            Expr in_e = Var::make(dataType, var->first, {}, v);
-            ins.push_back(in_e);
+        }
+
+        for (size_t j = 0; j < index_name.size(); j++) {
+            std::string ind = index_name[j];
+            // find the minimal range for the index
+            int range = INT_MAX;
+            size_t pos = 0;
+            for (size_t k = 0; k < visitor.all_index.size(); k++) {
+                if (ind == visitor.all_index[k]) {
+                    if (visitor.all_dom[k] < range) {
+                        range = visitor.all_dom[k];
+                        pos = k;
+                    }
+                }
+            }
+            Expr dom_ = Dom::make(index_type, 0, range);
+            if (pos < left_index) { // left part
+                Expr index_ = Index::make(index_type, ind, dom_, IndexType::Spatial);
+                allIndex.push_back(index_);
+            }
+            else { // right part
+                Expr index_ = Index::make(index_type, ind, dom_, IndexType::Reduce);
+                allIndex.push_back(index_);
+            }
+        }
+
+        // bind if with stmt
+        Stmt stmt = js.vs[i];
+        Expr false_var = Var::make(index_type, "tmp", {}, {});
+        Stmt false_stmt = Move::make(false_var, IntImm::make(index_type, 0), MoveType::LocalToLocal);
+        for (size_t j = 0; j < visitor.ifExpr.size(); j++) {
+            auto exp = visitor.ifExpr[j];
+            Expr if_cond = Binary::make(index_type, BinaryOpType::And,  
+                                        Compare::make(index_type, CompareOpType::LT, exp.first, IntImm::make(index_type, exp.second)),
+                                        Compare::make(index_type, CompareOpType::GE, exp.first, IntImm::make(index_type, 0)));
+            
+            stmt = IfThenElse::make(if_cond, stmt, false_stmt);
+        }
+        body.push_back(LoopNest::make(allIndex, {stmt}));
+
+        // add var and dom to var_dom for ins and outs
+        int dom_pos = 0;
+        for (size_t j = 0; j < visitor.all_var.size(); j++) {
+            std::string varname = visitor.all_var[j].first;
+            int domnum = visitor.all_var[j].second;
+            std::vector<size_t> vardom;
+            for (int k = dom_pos; k < dom_pos + domnum; k++) {
+                vardom.push_back(visitor.all_valid_dom[k]);
+            }
+
+            var_dom.push_back(std::make_pair(varname, vardom));
+            dom_pos += domnum;
         }
     }
-    for(auto out_name = js.out.begin(); out_name != js.out.end(); out_name++){
-        auto var = visitor.var_dims.find(*out_name);
-        if(var != visitor.var_dims.end()){
-            vector<long unsigned int> v;
-            for(auto i : var->second){
-                v.push_back(i);
-            }
-            Expr out_e = Var::make(dataType, var->first, {}, v);
-            outs.push_back(out_e);
-        }
-    }    
-    // kernel
-    Group kernel = Kernel::make(js.name, ins, outs, main_stmt, KernelType::CPU);
 
+    // build ins and outs
+    for (size_t i = 0; i < js.in.size(); i++) {
+        std::string name = js.in[i];
+        for (auto var : var_dom) {
+            if (var.first == name) {
+                auto in_expr = Var::make(dtype, name, {}, var.second);
+                ins.push_back(in_expr);
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < js.out.size(); i++) {
+        std::string name = js.out[i];
+        for (auto var : var_dom) {
+            if (var.first == name) {
+                auto out_expr = Var::make(dtype, name, {}, var.second);
+                outs.push_back(out_expr);
+                break;
+            }
+        }
+    }
+
+    Group kernel = Kernel::make(js.name, ins, outs, body, KernelType::CPU);
+
+    // printer
+    // IRPrinter printer;
+    // std::string code = printer.print(kernel);
+
+    // std::cout << code;
+
+    // std::cout << "Success!\n";
     return kernel;
 
 }

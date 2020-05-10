@@ -30,7 +30,6 @@ namespace Internal {
 
 
 void IRVisitor::visit(Ref<const IntImm> op) {
-    //std::cout << "IntImm: " << op->value() << "\n";
     return;
 }
 
@@ -57,7 +56,6 @@ void IRVisitor::visit(Ref<const Unary> op) {
 
 
 void IRVisitor::visit(Ref<const Binary> op) {
-    //std::cout << "Enter a Binary Node...\n";
     (op->a).visit_expr(this);
     (op->b).visit_expr(this);
     return;
@@ -100,80 +98,28 @@ void IRVisitor::visit(Ref<const Ramp> op) {
 
 
 void IRVisitor::visit(Ref<const Var> op) {
-    //std::cout << "Enter a Var Node...\n";
-
-    std::vector<int> dims;
-    std::vector<std::string> args;
-
-    if(op->shape.size() == 1 && op->shape[0] == 1 && op->args.size() == 0){ // scalar
-        dims.push_back((int)op->shape[0]);
-        if(!enterR){
-            leftVarName = op->name;
-        }
-        else{
-            if(op->name == leftVarName){
-                leftVarUseful = true;
-                if(args != left_indexes){
-                    leftVarPreSave = true;
-                    
-                }
-            }
-        }
-        if(var_dims.find(op->name) == var_dims.end())
-            var_dims[op->name] = dims;
+    // scalar
+    if (op->shape.size() == 1 && op->shape[0] == 1) {
+        all_var.push_back(std::make_pair(op->name, 0));
         return;
     }
-        
-    
-    assert(op->shape.size() == op->args.size());
-
-
-    for (size_t i = 0; i < op->shape.size(); ++i) {  
-        dims.push_back((int)op->shape[i]);
-
-        if(op->args[i].node_type() == IRNodeType::Index){    // index like i or j
-            auto curArg = op->args[i].as<Index>();
-            //std::cout << "Single Index: " << curArg->name << op->shape[i] << "\n";
-
-            if(!enterR){
-                left_indexes.push_back(curArg->name);
-            }
-            else{
-                if(op->name == leftVarName)
-                    args.push_back(curArg->name);
-            }
-
-            if(index_mp.find(curArg->name) != index_mp.end()){
-                index_mp[curArg->name].first = std::max(index_mp[curArg->name].first, 0);
-                index_mp[curArg->name].second = std::min(index_mp[curArg->name].second, (int)op->shape[i]);
-            }
-            else{
-                indexes.push_back(curArg->name);
-                index_mp[curArg->name] = std::make_pair(0, op->shape[i]);
-            }
+    size_t size_before = all_valid_dom.size();
+    for (size_t i = 0; i < op->args.size(); i++) {
+        auto arg = op->args[i];
+        auto sh = op->shape[i];
+        all_dom.push_back(sh);
+        all_valid_dom.push_back(sh);
+        complex = false;
+        // index like i +/- j need bound check
+        if (arg.node_type() != IRNodeType::Index) {
+            complex = true;
+            ifExpr.push_back(std::make_pair(arg, sh));
         }
-        else{   // binary Expr like i+j or k+2 or 2*m+1
-            needIf.push_back(std::make_pair(op->args[i], op->shape[i]));
-        }
-
+        arg.visit_expr(this);
+        if (complex)
+            all_dom.pop_back();
     }
-
-    if(!enterR){
-        leftVarName = op->name;
-    }
-    else{
-        if(op->name == leftVarName){
-            leftVarUseful = true;
-            if(args != left_indexes){
-                leftVarPreSave = true;
-                
-            }
-        }
-    }
-
-    if(var_dims.find(op->name) == var_dims.end())
-        var_dims[op->name] = dims;
-
+    all_var.push_back(std::make_pair(op->name, all_valid_dom.size() - size_before));
     return;
 }
 
@@ -186,6 +132,11 @@ void IRVisitor::visit(Ref<const Dom> op) {
 
 
 void IRVisitor::visit(Ref<const Index> op) {
+    if (complex) {
+        auto bk = all_dom.back();
+        all_dom.push_back(bk);
+    }
+    all_index.push_back(op->name);
     (op->dom).visit_expr(this);
     return;
 }
@@ -211,15 +162,8 @@ void IRVisitor::visit(Ref<const IfThenElse> op) {
 
 
 void IRVisitor::visit(Ref<const Move> op) {
-    index_mp.clear();
-    needIf.clear();
-    indexes.clear();
-    left_indexes.clear();
-    leftVarUseful = false;
-    leftVarPreSave = false;
-    enterR = false;
     (op->dst).visit_expr(this);
-    enterR = true;
+    middle = all_var.size();
     (op->src).visit_expr(this);
     return;
 }
@@ -243,3 +187,4 @@ void IRVisitor::visit(Ref<const Kernel> op) {
 }  // namespace Internal
 
 }  // namespace Boost
+
